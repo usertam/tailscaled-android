@@ -1,0 +1,303 @@
+diff --git a/paths/paths.go b/paths/paths.go
+index 398d8b23d..f283ff30d 100644
+--- a/paths/paths.go
++++ b/paths/paths.go
+@@ -43,10 +43,11 @@ func DefaultTailscaledSocket() string {
+ 	case distro.QNAP:
+ 		return "/tmp/tailscale/tailscaled.sock"
+ 	}
+-	if fi, err := os.Stat("/var/run"); err == nil && fi.IsDir() {
+-		return "/var/run/tailscale/tailscaled.sock"
+-	}
+-	return "tailscaled.sock"
++	// This fork targets the rooted-Android Magisk module layout where
++	// tailscaled is launched out of /data/adb/tailscale; keep the socket
++	// next to the state file. /var/run isn't a persistent location on
++	// Android, so we skip the probe upstream uses there.
++	return "/data/adb/tailscale/tailscaled.sock"
+ }
+ 
+ // Overridden in init by OS-specific files.
+diff --git a/paths/paths_unix.go b/paths/paths_unix.go
+index b1556b233..4de0fa07c 100644
+--- a/paths/paths_unix.go
++++ b/paths/paths_unix.go
+@@ -25,7 +25,12 @@ func statePath() string {
+ 		return "/userdata/tailscale/var/tailscaled.state"
+ 	}
+ 	switch runtime.GOOS {
+-	case "linux", "illumos", "solaris":
++	case "linux":
++		// This fork targets the rooted-Android Magisk module layout.
++		// /data/adb is Magisk's persistent directory and survives OTA
++		// updates; /var/lib doesn't exist on Android.
++		return "/data/adb/tailscale/tailscaled.state"
++	case "illumos", "solaris":
+ 		return "/var/lib/tailscale/tailscaled.state"
+ 	case "freebsd", "openbsd":
+ 		return "/var/db/tailscale/tailscaled.state"
+diff --git a/tsconst/linuxfw.go b/tsconst/linuxfw.go
+index 3a7a4cf2e..0cec280b0 100644
+--- a/tsconst/linuxfw.go
++++ b/tsconst/linuxfw.go
+@@ -9,35 +9,42 @@
+ //
+ // We tried to pick bits sufficiently out of the way that it's
+ // unlikely to collide with existing uses. We have 4 bytes of mark
+-// bits to play with. We leave the lower byte alone on the assumption
+-// that sysadmins would use those. Kubernetes uses a few bits in the
+-// second byte, so we steer clear of that too.
++// bits to play with.
+ //
+-// Empirically, most of the documentation on packet marks on the
+-// internet gives the impression that the marks are 16 bits
+-// wide. Based on this, we theorize that the upper two bytes are
+-// relatively unused in the wild, and so we consume bits 16:23 (the
+-// third byte).
++// The historical choice was to claim bits 16:23 (the third byte),
++// on the theory that documentation on packet marks online suggests
++// those marks are 16 bits wide and so the upper bytes are likely
++// unused in the wild. That theory does not hold on Android: netd
++// uses the entire low 21 bits for netId/permission/billing flags,
++// and the bytes immediately above that for vendor and "wakeup"
++// flags. The third byte (16:23) collides with the upper end of
++// netd's netId and the netd flag bits above it, which is what
++// causes Tailscale's bypass-mark rules to short-circuit netd's
++// per-network/per-uid policy.
++//
++// To stay clear of all of the AOSP-defined fields, we live in the
++// upper half of netd's "reserved" byte (bits 25:28). That leaves
++// bits 21:24 free for vendor/AOSP growth and rooted-user
++// customization, and avoids bits 29:31 which AOSP uses for vendor
++// and wakeup flags. The mask covers the four reserved-upper-half
++// bits; only two of them are currently assigned.
+ //
+ // The constants are in the iptables/iproute2 string format for
+ // matching and setting the bits, so they can be directly embedded in
+ // commands.
+ const (
+ 	// The mask for reading/writing the 'firewall mask' bits on a packet.
+-	// See the comment on the const block on why we only use the third byte.
+-	//
+-	// We claim bits 16:23 entirely. For now we only use the lower four
+-	// bits, leaving the higher 4 bits for future use.
+-	LinuxFwmarkMask    = "0xff0000"
+-	LinuxFwmarkMaskNum = 0xff0000
++	// See the comment on the const block on why we use bits 25:28.
++	LinuxFwmarkMask    = "0x1e000000"
++	LinuxFwmarkMaskNum = 0x1e000000
+ 
+ 	// Packet is from Tailscale and to a subnet route destination, so
+ 	// is allowed to be routed through this machine.
+-	LinuxSubnetRouteMark    = "0x40000"
+-	LinuxSubnetRouteMarkNum = 0x40000
++	LinuxSubnetRouteMark    = "0x08000000"
++	LinuxSubnetRouteMarkNum = 0x08000000
+ 
+ 	// Packet was originated by tailscaled itself, and must not be
+ 	// routed over the Tailscale network.
+-	LinuxBypassMark    = "0x80000"
+-	LinuxBypassMarkNum = 0x80000
++	LinuxBypassMark    = "0x10000000"
++	LinuxBypassMarkNum = 0x10000000
+ )
+diff --git a/util/linuxfw/iptables_runner.go b/util/linuxfw/iptables_runner.go
+index ace23a235..6de34f0e7 100644
+--- a/util/linuxfw/iptables_runner.go
++++ b/util/linuxfw/iptables_runner.go
+@@ -527,7 +527,7 @@ func (i *iptablesRunner) AddConnmarkSaveRule() error {
+ 		for _, rule := range rules {
+ 			if strings.Contains(rule, "CONNMARK") &&
+ 				strings.Contains(rule, "restore-mark") &&
+-				strings.Contains(rule, "ctmask 0xff0000") {
++				strings.Contains(rule, "ctmask "+fwmarkMask) {
+ 				// Rules already exist, skip adding
+ 				return nil
+ 			}
+diff --git a/util/linuxfw/linuxfw.go b/util/linuxfw/linuxfw.go
+index ed130a2b1..f59e92d8f 100644
+--- a/util/linuxfw/linuxfw.go
++++ b/util/linuxfw/linuxfw.go
+@@ -7,6 +7,7 @@
+ package linuxfw
+ 
+ import (
++	"encoding/binary"
+ 	"errors"
+ 	"fmt"
+ 	"os"
+@@ -60,23 +61,8 @@ func (e FWModeNotSupportedError) Unwrap() error {
+ 	CGNATModeReturn CGNATMode = "RETURN"
+ )
+ 
+-// The following bits are added to packet marks for Tailscale use.
+-//
+-// We tried to pick bits sufficiently out of the way that it's
+-// unlikely to collide with existing uses. We have 4 bytes of mark
+-// bits to play with. We leave the lower byte alone on the assumption
+-// that sysadmins would use those. Kubernetes uses a few bits in the
+-// second byte, so we steer clear of that too.
+-//
+-// Empirically, most of the documentation on packet marks on the
+-// internet gives the impression that the marks are 16 bits
+-// wide. Based on this, we theorize that the upper two bytes are
+-// relatively unused in the wild, and so we consume bits 16:23 (the
+-// third byte).
+-//
+-// The constants are in the iptables/iproute2 string format for
+-// matching and setting the bits, so they can be directly embedded in
+-// commands.
++// The Tailscale firewall mark bits live in [tsconst]; see the
++// commentary there for the bit layout we use and why.
+ const (
+ 	fwmarkMask         = tsconst.LinuxFwmarkMask
+ 	fwmarkMaskNum      = tsconst.LinuxFwmarkMaskNum
+@@ -86,19 +72,25 @@ func (e FWModeNotSupportedError) Unwrap() error {
+ 	bypassMarkNum      = tsconst.LinuxBypassMarkNum
+ )
+ 
++func uint32ToBytes(v uint32) []byte {
++	b := make([]byte, 4)
++	binary.BigEndian.PutUint32(b, v)
++	return b
++}
++
+ // getTailscaleFwmarkMaskNeg returns the negation of TailscaleFwmarkMask in bytes.
+ func getTailscaleFwmarkMaskNeg() []byte {
+-	return []byte{0xff, 0x00, 0xff, 0xff}
++	return uint32ToBytes(^uint32(fwmarkMaskNum))
+ }
+ 
+ // getTailscaleFwmarkMask returns the TailscaleFwmarkMask in bytes.
+ func getTailscaleFwmarkMask() []byte {
+-	return []byte{0x00, 0xff, 0x00, 0x00}
++	return uint32ToBytes(fwmarkMaskNum)
+ }
+ 
+ // getTailscaleSubnetRouteMark returns the TailscaleSubnetRouteMark in bytes.
+ func getTailscaleSubnetRouteMark() []byte {
+-	return []byte{0x00, 0x04, 0x00, 0x00}
++	return uint32ToBytes(subnetRouteMarkNum)
+ }
+ 
+ // checkIPv6ForTest can be set in tests.
+diff --git a/util/linuxfw/nftables_runner.go b/util/linuxfw/nftables_runner.go
+index b31be8bae..edb9c2145 100644
+--- a/util/linuxfw/nftables_runner.go
++++ b/util/linuxfw/nftables_runner.go
+@@ -2105,7 +2105,7 @@ func (n *nftablesRunner) DelStatefulRule(tunname string) error {
+ }
+ 
+ // makeConnmarkRestoreExprs creates nftables expressions to restore mark from conntrack.
+-// Implements: ct state established,related ct mark & 0xff0000 != 0 meta mark set ct mark & 0xff0000
++// Implements: ct state established,related ct mark & TailscaleFwmarkMask != 0 meta mark set ct mark & TailscaleFwmarkMask
+ func makeConnmarkRestoreExprs() []expr.Any {
+ 	return []expr.Any{
+ 		// Load conntrack state into register 1
+@@ -2133,7 +2133,7 @@ func makeConnmarkRestoreExprs() []expr.Any {
+ 			Register: 1,
+ 			Key:      expr.CtKeyMARK,
+ 		},
+-		// Mask to Tailscale mark bits (0xff0000)
++		// Mask to Tailscale mark bits (TailscaleFwmarkMask).
+ 		&expr.Bitwise{
+ 			SourceRegister: 1,
+ 			DestRegister:   1,
+@@ -2151,7 +2151,7 @@ func makeConnmarkRestoreExprs() []expr.Any {
+ }
+ 
+ // makeConnmarkSaveExprs creates nftables expressions to save mark to conntrack.
+-// Implements: ct state new meta mark & 0xff0000 != 0 ct mark set meta mark & 0xff0000
++// Implements: ct state new meta mark & TailscaleFwmarkMask != 0 ct mark set meta mark & TailscaleFwmarkMask
+ func makeConnmarkSaveExprs() []expr.Any {
+ 	return []expr.Any{
+ 		// Load conntrack state into register 1
+@@ -2177,7 +2177,7 @@ func makeConnmarkSaveExprs() []expr.Any {
+ 			Key:      expr.MetaKeyMARK,
+ 			Register: 1,
+ 		},
+-		// Mask to Tailscale mark bits (0xff0000)
++		// Mask to Tailscale mark bits (TailscaleFwmarkMask).
+ 		&expr.Bitwise{
+ 			SourceRegister: 1,
+ 			DestRegister:   1,
+diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
+index 41a2a7b90..d29ea6d67 100644
+--- a/wgengine/router/osrouter/router_linux.go
++++ b/wgengine/router/osrouter/router_linux.go
+@@ -1330,51 +1330,26 @@ func mustRouteTable(num int) RouteTable {
+ // The priority is the value represented here added to r.ipPolicyPrefBase,
+ // which is usually 5200.
+ //
+-// NOTE(apenwarr): We leave spaces between each pref number.
+-// This is so the sysadmin can override by inserting rules in
+-// between if they want.
++// A single inverted-fwmark rule sends every packet that is NOT carrying
++// the bypass mark to the tailscale route table. Packets that DO carry
++// the bypass mark (i.e. originated by tailscaled itself) skip this rule
++// and fall through to whatever rules sit below us — on stock Linux
++// that's the kernel's pref 32766/32767 main+default rules; on Android
++// that's netd's per-network/per-uid policy rules at pref >=10000.
+ //
+-// NOTE(apenwarr): This sequence seems complicated, right?
+-// If we could simply have a rule that said "match packets that
+-// *don't* have this fwmark", then we would only need to add one
+-// link to table 52 and we'd be done. Unfortunately, older kernels
+-// and 'ip rule' implementations (including busybox), don't support
+-// checking for the lack of a fwmark, only the presence. The technique
+-// below works even on very old kernels.
++// We used to install a trio of pref 10/30/50 rules that special-cased
++// bypass-marked packets onto main/default/unreachable explicitly. That
++// dance was a workaround for old kernels and busybox builds of `ip rule`
++// that couldn't express "not marked" — modern kernels can, and keeping
++// the trio actively breaks Android because the bypass-mark match fires
++// before netd's rules and short-circuits its policy.
+ var baseIPRules = []netlink.Rule{
+-	// Packets from us, tagged with our fwmark, first try the kernel's
+-	// main routing table.
+-	{
+-		Priority: 10,
+-		Mark:     tsconst.LinuxBypassMarkNum,
+-		Table:    mainRouteTable.Num,
+-	},
+-	// ...and then we try the 'default' table, for correctness,
+-	// even though it's been empty on every Linux system I've ever seen.
+-	{
+-		Priority: 30,
+-		Mark:     tsconst.LinuxBypassMarkNum,
+-		Table:    defaultRouteTable.Num,
+-	},
+-	// If neither of those matched (no default route on this system?)
+-	// then packets from us should be aborted rather than falling through
+-	// to the tailscale routes, because that would create routing loops.
+-	{
+-		Priority: 50,
+-		Mark:     tsconst.LinuxBypassMarkNum,
+-		Type:     unix.RTN_UNREACHABLE,
+-	},
+-	// If we get to this point, capture all packets and send them
+-	// through to the tailscale route table. For apps other than us
+-	// (ie. with no fwmark set), this is the first routing table, so
+-	// it takes precedence over all the others, ie. VPN routes always
+-	// beat non-VPN routes.
+ 	{
+ 		Priority: 70,
++		Invert:   true,
++		Mark:     tsconst.LinuxBypassMarkNum,
+ 		Table:    tailscaleRouteTable.Num,
+ 	},
+-	// If that didn't match, then non-fwmark packets fall through to the
+-	// usual rules (pref 32766 and 32767, ie. main and default).
+ }
+ 
+ // ubntIPRules are the policy routing rules that Tailscale uses, when running
+@@ -1450,6 +1425,9 @@ func (r *linuxRouter) addIPRulesWithIPCommand() error {
+ 				"rule", "add",
+ 				"pref", strconv.Itoa(rule.Priority + r.ipPolicyPrefBase),
+ 			}
++			if rule.Invert {
++				args = append(args, "not")
++			}
+ 			if rule.Mark != 0 {
+ 				if r.fwmaskWorks() {
+ 					args = append(args, "fwmark", fmt.Sprintf("0x%x/%s", rule.Mark, tsconst.LinuxFwmarkMask))
