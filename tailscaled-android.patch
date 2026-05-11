@@ -36,6 +36,53 @@ index b1556b233..4de0fa07c 100644
  		return "/var/lib/tailscale/tailscaled.state"
  	case "freebsd", "openbsd":
  		return "/var/db/tailscale/tailscaled.state"
+diff --git a/ssh/tailssh/user.go b/ssh/tailssh/user.go
+index 0d2bf31e7..77962971e 100644
+--- a/ssh/tailssh/user.go
++++ b/ssh/tailssh/user.go
+@@ -6,6 +6,7 @@
+ package tailssh
+ 
+ import (
++	"bytes"
+ 	"os"
+ 	"os/exec"
+ 	"os/user"
+@@ -108,12 +109,34 @@ func defaultPathForUser(u *user.User) string {
+ 	case distro.NixOS:
+ 		return defaultPathForUserOnNixOS(u)
+ 	}
++	if p := pathFromInitEnviron(); p != "" {
++		return p
++	}
+ 	if isRoot {
+ 		return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ 	}
+ 	return "/usr/local/bin:/usr/bin:/bin"
+ }
+ 
++// pathFromInitEnviron returns the value of PATH from /proc/1/environ
++// (init's environment), or "" if it can't be read or doesn't set PATH.
++// This catches platforms — notably Android under a Magisk module — where
++// the canonical system PATH doesn't match any of the hardcoded defaults
++// above. On systemd Linux it usually matches the hardcoded values anyway,
++// and on non-Linux systems the file doesn't exist so this is a no-op.
++func pathFromInitEnviron() string {
++	b, err := os.ReadFile("/proc/1/environ")
++	if err != nil {
++		return ""
++	}
++	for _, kv := range bytes.Split(b, []byte{0}) {
++		if rest, ok := bytes.CutPrefix(kv, []byte("PATH=")); ok {
++			return string(rest)
++		}
++	}
++	return ""
++}
++
+ func defaultPathForUserOnNixOS(u *user.User) string {
+ 	for lr := range lineiter.File("/etc/pam/environment") {
+ 		lineb, err := lr.Value()
 diff --git a/tsconst/linuxfw.go b/tsconst/linuxfw.go
 index 3a7a4cf2e..0cec280b0 100644
 --- a/tsconst/linuxfw.go
