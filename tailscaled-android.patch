@@ -268,6 +268,37 @@ index b31be8bae..edb9c2145 100644
  		&expr.Bitwise{
  			SourceRegister: 1,
  			DestRegister:   1,
+diff --git a/util/osuser/user.go b/util/osuser/user.go
+index 2de3da762..5acd988b2 100644
+--- a/util/osuser/user.go
++++ b/util/osuser/user.go
+@@ -87,6 +87,26 @@ func lookup(usernameOrUID string, std lookupStd, wantShell bool) (*user.User, st
+ 		return u, shell, nil
+ 	}
+ 
++	// This fork targets the rooted-Android Magisk module layout. Android
++	// doesn't ship getent/NSS the way glibc distros do, and the only
++	// meaningful Unix user the SSH server cares about is root. Skip the
++	// getent shell-out and the os/user lookup (which goes through bionic
++	// in a way we can't rely on from a static binary) and just hand back
++	// a hardcoded root entry.
++	if runtime.GOOS == "linux" {
++		var shell string
++		if wantShell {
++			shell = "/system/bin/sh"
++		}
++		return &user.User{
++			Uid:      "0",
++			Gid:      "0",
++			Username: "root",
++			Name:     "root",
++			HomeDir:  "/data/local/tmp",
++		}, shell, nil
++	}
++
+ 	if runtime.GOOS == "plan9" {
+ 		return &user.User{
+ 			Uid:      "0",
 diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
 index 41a2a7b90..d29ea6d67 100644
 --- a/wgengine/router/osrouter/router_linux.go
