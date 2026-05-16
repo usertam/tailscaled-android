@@ -17,23 +17,37 @@
       iptables = pkgs.pkgsStatic.iptables;
       rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: { doCheck = false; });
 
-      module = pkgs.runCommand "tailscaled-magisk" {
+      module = pkgs.stdenvNoCC.mkDerivation {
+        pname = "tailscaled-magisk";
+        version = tailscaled.version;
         src = ./module;
         nativeBuildInputs = [ pkgs.zip ];
-      } ''
-        cp -r $src source
-        chmod +w source
-        cd source
-        install -Dm755 -t system/product/bin \
-          ${tailscaled}/bin/tailscaled \
-          ${iptables}/bin/xtables-legacy-multi \
-          ${rsync}/bin/rsync
 
-        mkdir $out
-        find . -type f -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
-        find . -type f | LC_ALL=C sort | \
-          TZ=UTC zip -X -q -@ $out/tailscaled-magisk-${tailscaled.version}.zip
-      '';
+        unpackPhase = ''
+          cp -r $src source
+          chmod +w source
+          cd source
+        '';
+
+        configurePhase = ''
+          substituteInPlace module.prop \
+            --subst-var version
+        '';
+
+        buildPhase = ''
+          install -Dm755 -t system/product/bin \
+            ${tailscaled}/bin/tailscaled \
+            ${iptables}/bin/xtables-legacy-multi \
+            ${rsync}/bin/rsync
+        '';
+
+        installPhase = ''
+          mkdir $out
+          find . -type f -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+          find . -type f | LC_ALL=C sort | \
+            TZ=UTC zip -X -q -@ $out/tailscaled-magisk-$version.zip
+        '';
+      };
     in
     {
       packages.${system} = {

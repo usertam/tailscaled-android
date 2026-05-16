@@ -1,6 +1,6 @@
 id=tailscaled
 name=tailscaled
-version=v0.1.0
+version=v@version@
 versionCode=1
 author=usertam
 description=
