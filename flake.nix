@@ -15,6 +15,7 @@
       });
 
       iptables = pkgs.pkgsStatic.iptables;
+      rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: { doCheck = false; });
 
       module = pkgs.runCommand "tailscaled-magisk" {
         src = ./module;
@@ -24,7 +25,9 @@
         chmod +w source
         cd source
         install -Dm755 -t system/product/bin \
-          ${tailscaled}/bin/tailscaled ${iptables}/bin/xtables-legacy-multi
+          ${tailscaled}/bin/tailscaled \
+          ${iptables}/bin/xtables-legacy-multi \
+          ${rsync}/bin/rsync
 
         mkdir $out
         find . -type f -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
@@ -34,7 +37,7 @@
     in
     {
       packages.${system} = {
-        inherit tailscaled;
+        inherit tailscaled iptables rsync;
         default = module;
       };
     };
