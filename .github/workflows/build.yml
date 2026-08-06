@@ -1,0 +1,31 @@
+name: Build artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+    - master
+  pull_request:
+
+permissions:
+  id-token: write
+
+jobs:
+  build:
+    name: Build artifacts
+    runs-on: ubuntu-26.04-arm
+    steps:
+    - uses: actions/checkout@main
+    - uses: NixOS/nix-installer-action@main
+    - uses: Mic92/niks3-action@main
+      with:
+        server-url: https://niks3.usertam.dev
+    - name: Build Magisk module
+      run: |
+        nix build --print-build-logs --keep-going --fallback \
+          .#packages.aarch64-linux.default
+        echo "ARTIFACT_NAME=$(basename result/tailscaled-magisk-*.zip .zip)" >> $GITHUB_ENV
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: result/tailscaled-magisk-*.zip
