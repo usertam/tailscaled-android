@@ -8,3 +8,6 @@ ln -sf xtables-legacy-multi $MODPATH/system/product/bin/iptables
 ln -sf xtables-legacy-multi $MODPATH/system/product/bin/ip6tables
 
 set_perm $MODPATH/system/product/bin/rsync 0 0 0755
+
+mkdir -p /data/adb/tailscale
+set_perm /data/adb/tailscale 0 0 0700

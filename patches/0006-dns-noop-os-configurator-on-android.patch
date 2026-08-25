@@ -1,0 +1,32 @@
+dns: use the noop OS configurator on Android
+
+In Android, system DNS is owned by netd's DnsResolver and is only
+configurable over Binder: there is no /etc/resolv.conf, so upstream's
+Linux probe lands on the "direct" manager, whose GetBaseConfig
+failure on the missing file aborts dns.Manager.Set before the
+quad-100 resolver is configured, killing MagicDNS. Do what the
+GOOS=android build does and use the noop manager: quad-100 still
+serves MagicDNS and forwards to the tailnet's resolvers.
+
+diff --git a/net/dns/manager_linux.go b/net/dns/manager_linux.go
+index 392b64b..f3ce605 100644
+--- a/net/dns/manager_linux.go
++++ b/net/dns/manager_linux.go
+@@ -69,6 +69,17 @@ func NewOSConfigurator(logf logger.Logf, health *health.Tracker, bus *eventbus.B
+ 		return NewNoopManager()
+ 	}
+ 
++	// In Android, system DNS is owned by netd's DnsResolver and is only
++	// configurable over Binder; there is no /etc/resolv.conf, so the probe
++	// below would land on the "direct" manager, whose GetBaseConfig
++	// failure on the missing file aborts dns.Manager.Set before the
++	// quad-100 resolver is configured, killing MagicDNS. Use the noop
++	// manager like the GOOS=android build does: quad-100 still serves
++	// MagicDNS and forwards to the tailnet's resolvers.
++	if _, err := os.Stat("/data/adb/tailscale"); err == nil {
++		return NewNoopManager()
++	}
++
+ 	env := newOSConfigEnv{
+ 		fs:              directFS{},
+ 		resolvconfStyle: resolvconfStyle,

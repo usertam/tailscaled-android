@@ -10,7 +10,14 @@
 
       tailscaled = pkgs.pkgsStatic.tailscale.overrideAttrs (prev: {
         name = "tailscaled-android";
-        patches = (prev.patches or [ ]) ++ [ ./tailscaled-android.patch ];
+        patches = (prev.patches or [ ]) ++ [
+          ./patches/0001-linuxfw-relocate-fwmark-bits-for-netd.patch
+          ./patches/0002-router-single-inverted-fwmark-ip-rule.patch
+          ./patches/0003-paths-magisk-module-layout.patch
+          ./patches/0004-osuser-hardcode-root-user.patch
+          ./patches/0005-tailssh-default-path-from-init-environ.patch
+          ./patches/0006-dns-noop-os-configurator-on-android.patch
+        ];
         postInstall = "wrapProgram() { return; };" + prev.postInstall;
       });
 

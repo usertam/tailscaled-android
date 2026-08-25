@@ -1,0 +1,98 @@
+linuxfw: relocate fwmark bits to avoid Android netd
+
+In Android, netd owns the low 21 bits of the packet mark and bits
+29:31, so upstream's bits 16:23 collide with netd's netId/flag
+fields and short-circuit its per-network/per-uid policy. Move the
+Tailscale bits to 25:28, the upper half of netd's reserved byte.
+
+diff --git a/tsconst/linuxfw.go b/tsconst/linuxfw.go
+index 3a7a4cf..a0f1033 100644
+--- a/tsconst/linuxfw.go
++++ b/tsconst/linuxfw.go
+@@ -7,37 +7,39 @@
+ 
+ // The following bits are added to packet marks for Tailscale use.
+ //
+-// We tried to pick bits sufficiently out of the way that it's
+-// unlikely to collide with existing uses. We have 4 bytes of mark
+-// bits to play with. We leave the lower byte alone on the assumption
+-// that sysadmins would use those. Kubernetes uses a few bits in the
+-// second byte, so we steer clear of that too.
++// The historical choice was to claim bits 16:23 (the third byte),
++// on the theory that documentation on packet marks online suggests
++// those marks are 16 bits wide and so the upper bytes are likely
++// unused in the wild. That theory does not hold on Android: netd
++// uses the entire low 21 bits for netId/permission/billing flags,
++// and the bytes immediately above that for vendor and "wakeup"
++// flags. The third byte (16:23) collides with the upper end of
++// netd's netId and the netd flag bits above it, which is what
++// causes Tailscale's bypass-mark rules to short-circuit netd's
++// per-network/per-uid policy.
+ //
+-// Empirically, most of the documentation on packet marks on the
+-// internet gives the impression that the marks are 16 bits
+-// wide. Based on this, we theorize that the upper two bytes are
+-// relatively unused in the wild, and so we consume bits 16:23 (the
+-// third byte).
++// To stay clear of all of the AOSP-defined fields, we live in the
++// upper half of netd's "reserved" byte (bits 25:28). That leaves
++// bits 21:24 free for vendor/AOSP growth and rooted-user
++// customization, and avoids bits 29:31 which AOSP uses for vendor
++// and wakeup flags. The mask covers the four reserved-upper-half
++// bits; only two of them are currently assigned.
+ //
+ // The constants are in the iptables/iproute2 string format for
+ // matching and setting the bits, so they can be directly embedded in
+ // commands.
+ const (
+ 	// The mask for reading/writing the 'firewall mask' bits on a packet.
+-	// See the comment on the const block on why we only use the third byte.
+-	//
+-	// We claim bits 16:23 entirely. For now we only use the lower four
+-	// bits, leaving the higher 4 bits for future use.
+-	LinuxFwmarkMask    = "0xff0000"
+-	LinuxFwmarkMaskNum = 0xff0000
++	LinuxFwmarkMask    = "0x1e000000"
++	LinuxFwmarkMaskNum = 0x1e000000
+ 
+ 	// Packet is from Tailscale and to a subnet route destination, so
+ 	// is allowed to be routed through this machine.
+-	LinuxSubnetRouteMark    = "0x40000"
+-	LinuxSubnetRouteMarkNum = 0x40000
++	LinuxSubnetRouteMark    = "0x08000000"
++	LinuxSubnetRouteMarkNum = 0x08000000
+ 
+ 	// Packet was originated by tailscaled itself, and must not be
+ 	// routed over the Tailscale network.
+-	LinuxBypassMark    = "0x80000"
+-	LinuxBypassMarkNum = 0x80000
++	LinuxBypassMark    = "0x10000000"
++	LinuxBypassMarkNum = 0x10000000
+ )
+diff --git a/util/linuxfw/iptables_runner.go b/util/linuxfw/iptables_runner.go
+index ad983fb..5eeff57 100644
+--- a/util/linuxfw/iptables_runner.go
++++ b/util/linuxfw/iptables_runner.go
+@@ -548,7 +548,7 @@ func (i *iptablesRunner) AddConnmarkSaveRule() error {
+ 		for _, rule := range rules {
+ 			if strings.Contains(rule, "CONNMARK") &&
+ 				strings.Contains(rule, "restore-mark") &&
+-				strings.Contains(rule, "ctmask 0xff0000") {
++				strings.Contains(rule, "ctmask "+fwmarkMask) {
+ 				// Rules already exist, skip adding
+ 				return nil
+ 			}
+diff --git a/util/linuxfw/nftables_runner.go b/util/linuxfw/nftables_runner.go
+index dd09618..7f4699d 100644
+--- a/util/linuxfw/nftables_runner.go
++++ b/util/linuxfw/nftables_runner.go
+@@ -2128,6 +2128,9 @@ func (n *nftablesRunner) DelStatefulRule(tunname string) error {
+ // makeConnmarkRestoreExprs creates nftables expressions to restore mark from conntrack.
+ // Implements: ct state established,related ct mark & 0xff0000 != 0 meta mark set ct mark & 0xff0000
+ //
++// NOTE: 0xff0000 in the comments here and below is upstream's stock
++// mask; the code actually uses tsconst.LinuxFwmarkMask (0x1e000000).
++//
+ // LIMITATION: Unlike iptables CONNMARK --restore-mark with --nfmask, this implementation
+ // overwrites non-Tailscale bits in the packet mark rather than merging them. This is a
+ // fundamental limitation of the Linux kernel's nftables expression VM (not the Go library).

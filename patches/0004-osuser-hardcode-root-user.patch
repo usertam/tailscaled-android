@@ -1,0 +1,38 @@
+osuser: hand back a hardcoded root user on Android
+
+In Android, there is no getent/NSS for the lookup to shell out to,
+and the only meaningful Unix user for the SSH server is root.
+
+diff --git a/util/osuser/user.go b/util/osuser/user.go
+index 3fdbfbb..8a16999 100644
+--- a/util/osuser/user.go
++++ b/util/osuser/user.go
+@@ -10,6 +10,7 @@
+ 	"errors"
+ 	"fmt"
+ 	"log"
++	"os"
+ 	"os/exec"
+ 	"os/user"
+ 	"reflect"
+@@ -96,6 +97,20 @@ func lookup(usernameOrUID string, std lookupStd, wantShell bool) (*user.User, st
+ 		return u, shell, nil
+ 	}
+ 
++	if _, err := os.Stat("/data/adb/tailscale"); err == nil {
++		var shell string
++		if wantShell {
++			shell = "/system/bin/sh"
++		}
++		return &user.User{
++			Uid:      "0",
++			Gid:      "0",
++			Username: "root",
++			Name:     "root",
++			HomeDir:  "/data/local/tmp",
++		}, shell, nil
++	}
++
+ 	if runtime.GOOS == "plan9" {
+ 		return &user.User{
+ 			Uid:      "0",

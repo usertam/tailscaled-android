@@ -1,0 +1,34 @@
+paths: prefer /data/adb/tailscale for state and socket
+
+In Android, /var/lib and /var/run are absent or not persistent. When
+/data/adb/tailscale exists (the module creates it on install), keep
+the state and control socket there; it survives OTA updates.
+
+diff --git a/paths/paths.go b/paths/paths.go
+index 398d8b2..da4ce5e 100644
+--- a/paths/paths.go
++++ b/paths/paths.go
+@@ -43,6 +43,9 @@ func DefaultTailscaledSocket() string {
+ 	case distro.QNAP:
+ 		return "/tmp/tailscale/tailscaled.sock"
+ 	}
++	if _, err := os.Stat("/data/adb/tailscale"); err == nil {
++		return "/data/adb/tailscale/tailscaled.sock"
++	}
+ 	if fi, err := os.Stat("/var/run"); err == nil && fi.IsDir() {
+ 		return "/var/run/tailscale/tailscaled.sock"
+ 	}
+diff --git a/paths/paths_unix.go b/paths/paths_unix.go
+index b1556b2..53ad170 100644
+--- a/paths/paths_unix.go
++++ b/paths/paths_unix.go
+@@ -24,6 +24,9 @@ func statePath() string {
+ 	if runtime.GOOS == "linux" && distro.Get() == distro.JetKVM {
+ 		return "/userdata/tailscale/var/tailscaled.state"
+ 	}
++	if _, err := os.Stat("/data/adb/tailscale"); err == nil {
++		return "/data/adb/tailscale/tailscaled.state"
++	}
+ 	switch runtime.GOOS {
+ 	case "linux", "illumos", "solaris":
+ 		return "/var/lib/tailscale/tailscaled.state"

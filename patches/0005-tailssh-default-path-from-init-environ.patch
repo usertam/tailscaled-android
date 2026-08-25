@@ -1,0 +1,50 @@
+tailssh: derive the default PATH from init's environment on Android
+
+In Android, the canonical system PATH matches none of the hardcoded
+defaults; read it from /proc/1/environ instead.
+
+diff --git a/ssh/tailssh/user.go b/ssh/tailssh/user.go
+index 8d7775c..f40b086 100644
+--- a/ssh/tailssh/user.go
++++ b/ssh/tailssh/user.go
+@@ -6,6 +6,7 @@
+ package tailssh
+ 
+ import (
++	"bytes"
+ 	"os"
+ 	"os/exec"
+ 	"os/user"
+@@ -108,12 +109,32 @@ func defaultPathForUser(u *user.User) string {
+ 	case distro.NixOS:
+ 		return defaultPathForUserOnNixOS(u)
+ 	}
++	if _, err := os.Stat("/data/adb/tailscale"); err == nil {
++		if p := pathFromInitEnviron(); p != "" {
++			return p
++		}
++	}
+ 	if isRoot {
+ 		return "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ 	}
+ 	return "/usr/local/bin:/usr/bin:/bin"
+ }
+ 
++// pathFromInitEnviron returns the value of PATH from /proc/1/environ
++// (init's environment), or "" if it can't be read or doesn't set PATH.
++func pathFromInitEnviron() string {
++	b, err := os.ReadFile("/proc/1/environ")
++	if err != nil {
++		return ""
++	}
++	for _, kv := range bytes.Split(b, []byte{0}) {
++		if rest, ok := bytes.CutPrefix(kv, []byte("PATH=")); ok {
++			return string(rest)
++		}
++	}
++	return ""
++}
++
+ func defaultPathForUserOnNixOS(u *user.User) string {
+ 	for lr := range lineiter.File("/etc/pam/environment") {
+ 		lineb, err := lr.Value()

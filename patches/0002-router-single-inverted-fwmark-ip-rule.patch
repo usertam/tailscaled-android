@@ -1,0 +1,82 @@
+router: replace the bypass-mark rule trio with one inverted rule
+
+In Android, the pref 10/30/50 bypass-mark rules fire before netd's
+per-network/per-uid policy rules at pref >=10000 and short-circuit
+them. Install a single inverted-fwmark rule at pref 70 instead, so
+bypass-marked packets fall through to whatever sits below us.
+
+diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
+index c8b31d0..2332805 100644
+--- a/wgengine/router/osrouter/router_linux.go
++++ b/wgengine/router/osrouter/router_linux.go
+@@ -1580,51 +1580,20 @@ func mustRouteTable(num int) RouteTable {
+ // The priority is the value represented here added to r.ipPolicyPrefBase,
+ // which is usually 5200.
+ //
+-// NOTE(apenwarr): We leave spaces between each pref number.
+-// This is so the sysadmin can override by inserting rules in
+-// between if they want.
+-//
+-// NOTE(apenwarr): This sequence seems complicated, right?
+-// If we could simply have a rule that said "match packets that
+-// *don't* have this fwmark", then we would only need to add one
+-// link to table 52 and we'd be done. Unfortunately, older kernels
+-// and 'ip rule' implementations (including busybox), don't support
+-// checking for the lack of a fwmark, only the presence. The technique
+-// below works even on very old kernels.
++// A single inverted-fwmark rule sends every packet NOT carrying the
++// bypass mark to the tailscale route table. Bypass-marked packets
++// (originated by tailscaled itself) fall through to the rules below
++// us — the kernel's pref 32766/32767 main+default rules, and in
++// Android netd's per-network/per-uid policy rules at pref >=10000,
++// which upstream's pref 10/30/50 bypass-mark trio would fire before
++// and short-circuit.
+ var baseIPRules = []netlink.Rule{
+-	// Packets from us, tagged with our fwmark, first try the kernel's
+-	// main routing table.
+-	{
+-		Priority: 10,
+-		Mark:     tsconst.LinuxBypassMarkNum,
+-		Table:    mainRouteTable.Num,
+-	},
+-	// ...and then we try the 'default' table, for correctness,
+-	// even though it's been empty on every Linux system I've ever seen.
+-	{
+-		Priority: 30,
+-		Mark:     tsconst.LinuxBypassMarkNum,
+-		Table:    defaultRouteTable.Num,
+-	},
+-	// If neither of those matched (no default route on this system?)
+-	// then packets from us should be aborted rather than falling through
+-	// to the tailscale routes, because that would create routing loops.
+-	{
+-		Priority: 50,
+-		Mark:     tsconst.LinuxBypassMarkNum,
+-		Type:     unix.RTN_UNREACHABLE,
+-	},
+-	// If we get to this point, capture all packets and send them
+-	// through to the tailscale route table. For apps other than us
+-	// (ie. with no fwmark set), this is the first routing table, so
+-	// it takes precedence over all the others, ie. VPN routes always
+-	// beat non-VPN routes.
+ 	{
+ 		Priority: 70,
++		Invert:   true,
++		Mark:     tsconst.LinuxBypassMarkNum,
+ 		Table:    tailscaleRouteTable.Num,
+ 	},
+-	// If that didn't match, then non-fwmark packets fall through to the
+-	// usual rules (pref 32766 and 32767, ie. main and default).
+ }
+ 
+ // ubntIPRules are the policy routing rules that Tailscale uses, when running
+@@ -1700,6 +1669,9 @@ func (r *linuxRouter) addIPRulesWithIPCommand() error {
+ 				"rule", "add",
+ 				"pref", strconv.Itoa(rule.Priority + r.ipPolicyPrefBase),
+ 			}
++			if rule.Invert {
++				args = append(args, "not")
++			}
+ 			if rule.Mark != 0 {
+ 				if r.fwmaskWorks() {
+ 					args = append(args, "fwmark", fmt.Sprintf("0x%x/%s", rule.Mark, tsconst.LinuxFwmarkMask))
