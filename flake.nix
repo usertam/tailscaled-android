@@ -24,6 +24,8 @@
       iptables = pkgs.pkgsStatic.iptables;
       rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: { doCheck = false; });
 
+      ebpf = pkgs.callPackage ./ebpf/default.nix { };
+
       module = pkgs.stdenvNoCC.mkDerivation {
         pname = "tailscaled-magisk";
         version = tailscaled.version;
@@ -46,6 +48,11 @@
             ${tailscaled}/bin/tailscaled \
             ${iptables}/bin/xtables-legacy-multi \
             ${rsync}/bin/rsync
+
+          install -Dm755 -t ebpf \
+            ${ebpf}/bin/bpftool \
+            ${ebpf}/bin/magicdns \
+            ${ebpf}/lib/magicdns.bpf.o
         '';
 
         installPhase = ''
@@ -58,7 +65,7 @@
     in
     {
       packages.${system} = {
-        inherit tailscaled iptables rsync;
+        inherit tailscaled iptables rsync ebpf;
         default = module;
       };
     };

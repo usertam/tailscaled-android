@@ -1,0 +1,127 @@
+#!/bin/sh -eu
+# magicdns — divert single-label DNS queries into a tun-backed resolver.
+#
+#   magicdns attach <tun> <out>...   load and attach
+#   magicdns detach <tun> <out>...   detach and unpin
+#
+# Configuration is delivered the same way libbpf delivers .rodata: per
+# distinct l2 offset the script pre-creates the 8-byte cfg array map
+# (u32 tun ifindex, u32 l2 offset, little-endian), fills and freezes
+# it, and hands it to bpftool with a map replacement — the verifier
+# then folds the frozen values into the program exactly as a skeleton
+# loader would achieve. The l2 offset is derived from the device's
+# ARPHRD type; devices with equal offsets share one load. The
+# dns_state map is declared pinned-by-name, so every load reuses the
+# single map at BPFFS/dns_state instead of creating a private copy;
+# the script asserts exactly one instance exists after attaching.
+#
+# Attachment prefers tcx (kernel 6.6+, bpftool-only); on older kernels
+# it falls back to a clsact qdisc via tc(8) if present. The program is
+# SCHED_CLS either way — only the hook plumbing differs. Set
+# MAGICDNS_ATTACH=tcx|tc to force a mechanism. The frozen-rodata
+# config itself needs map_freeze, i.e. kernel 5.2+.
+
+MODDIR=${0%/*}
+BPFTOOL=$MODDIR/bpftool
+OBJ=$MODDIR/magicdns.bpf.o
+BPFFS=/sys/fs/bpf
+PIN=$BPFFS/magicdns
+MODE=''${MAGICDNS_ATTACH:-}
+
+usage() {
+	echo "usage: magicdns attach|detach <tun> <out>..." >&2
+	exit 2
+}
+
+# l2_off <dev>: where the IP header starts, from the ARPHRD type;
+# unknown types are refused, never guessed
+l2_off() {
+	case $(cat /sys/class/net/"$1"/type) in
+	1) echo 14 ;;              # ARPHRD_ETHER
+	519 | 65534) echo 0 ;;     # ARPHRD_RAWIP, ARPHRD_NONE
+	*) echo "$1: unsupported link type" >&2; exit 1 ;;
+	esac
+}
+
+# hook <ingress|egress> <pinned-prog> <dev>: tcx first, clsact fallback;
+# whichever works first is locked in for the remaining attachments
+hook() {
+	if [ "$MODE" != tc ]; then
+		if $BPFTOOL net attach "tcx_$1" pinned "$2" dev "$3" \
+			2>/dev/null; then
+			MODE=tcx
+			return
+		fi
+		[ "$MODE" = tcx ] && {
+			echo "tcx attach failed on $3" >&2
+			exit 1
+		}
+		command -v tc >/dev/null || {
+			echo "kernel lacks tcx and no tc(8) for clsact" >&2
+			exit 1
+		}
+		MODE=tc
+	fi
+	tc qdisc add dev "$3" clsact 2>/dev/null || true
+	tc filter replace dev "$3" "$1" prio 1 handle 1 \
+		bpf da object-pinned "$2"
+}
+
+[ $# -ge 3 ] || usage
+cmd=$1 tun=$2
+shift 2
+
+case $cmd in
+attach)
+	mountpoint -q $BPFFS 2>/dev/null || mount -t bpf bpf $BPFFS
+	mkdir -p $PIN
+	[ "$(l2_off "$tun")" = 0 ] || {
+		echo "$tun: not a layer-3 tun device" >&2
+		exit 1
+	}
+	tunidx=$(cat /sys/class/net/"$tun"/ifindex)
+
+	first=
+	for dev; do
+		off=$(l2_off "$dev")
+		dir=$PIN/l2-$off
+		if ! [ -e "$dir"/dns_out ]; then
+			cfg=$PIN/cfg-$off
+			# 0x480 = BPF_F_RDONLY_PROG | BPF_F_MMAPABLE,
+			# matching what libbpf gives .rodata
+			$BPFTOOL map create "$cfg" type array key 4 value 8 \
+				entries 1 name magicdns.rodata flags 0x480
+			$BPFTOOL map update pinned "$cfg" key 0 0 0 0 value \
+				$((tunidx & 255)) $((tunidx >> 8 & 255)) \
+				$((tunidx >> 16 & 255)) $((tunidx >> 24 & 255)) \
+				"$off" 0 0 0
+			$BPFTOOL map freeze pinned "$cfg"
+			$BPFTOOL prog loadall "$OBJ" "$dir" \
+				map name magicdns.rodata pinned "$cfg"
+		fi
+		hook egress "$dir"/dns_out "$dev"
+		[ -n "$first" ] || first=$dir
+	done
+	# dns_in ignores the l2 offset (tun frames start at the IP
+	# header), so any loaded instance's copy will do
+	hook ingress "$first"/dns_in "$tun"
+
+	n=$($BPFTOOL map show name dns_state | grep -c '^[0-9]')
+	[ "$n" = 1 ] || {
+		echo "dns_state split across $n maps; state is broken" >&2
+		exit 1
+	}
+	;;
+detach)
+	for dev; do
+		$BPFTOOL net detach tcx_egress dev "$dev" 2>/dev/null || true
+		tc qdisc del dev "$dev" clsact 2>/dev/null || true
+	done
+	$BPFTOOL net detach tcx_ingress dev "$tun" 2>/dev/null || true
+	tc qdisc del dev "$tun" clsact 2>/dev/null || true
+	rm -rf $PIN $BPFFS/dns_state
+	;;
+*)
+	usage
+	;;
+esac
