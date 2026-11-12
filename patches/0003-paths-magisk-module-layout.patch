@@ -5,10 +5,10 @@ In Android, /var/lib and /var/run are absent or not persistent. When
 the state and control socket there; it survives OTA updates.
 
 diff --git a/paths/paths.go b/paths/paths.go
-index 398d8b2..da4ce5e 100644
+index 77605a1..21b0e28 100644
 --- a/paths/paths.go
 +++ b/paths/paths.go
-@@ -43,6 +43,9 @@ func DefaultTailscaledSocket() string {
+@@ -82,6 +82,9 @@ func DefaultTailscaledSocket() string {
  	case distro.QNAP:
  		return "/tmp/tailscale/tailscaled.sock"
  	}

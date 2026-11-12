@@ -4,7 +4,7 @@ In Android, there is no getent/NSS for the lookup to shell out to,
 and the only meaningful Unix user for the SSH server is root.
 
 diff --git a/util/osuser/user.go b/util/osuser/user.go
-index 3fdbfbb..8a16999 100644
+index fccaae4..d5c298b 100644
 --- a/util/osuser/user.go
 +++ b/util/osuser/user.go
 @@ -10,6 +10,7 @@
@@ -15,7 +15,7 @@ index 3fdbfbb..8a16999 100644
  	"os/exec"
  	"os/user"
  	"reflect"
-@@ -96,6 +97,20 @@ func lookup(usernameOrUID string, std lookupStd, wantShell bool) (*user.User, st
+@@ -101,6 +102,20 @@ func lookup(usernameOrUID string, std lookupStd, wantShell bool) (*user.User, st
  		return u, shell, nil
  	}
  
