@@ -17,6 +17,10 @@ host.
   the vendor ROM ships.
 - `service.sh` execs `tailscaled` at late boot. State and the control
   socket live under `/data/adb/tailscale/` (persistent across OTA).
+- `magicdns.sh`, run by `service.sh` before it execs `tailscaled`,
+  installs a nat rule that DNATs DNS queries for single-label names
+  (`printer`, not `printer.lan`) to quad-100; the match is a classic
+  BPF filter carried in the rule itself.
 - `uninstall.sh` kills the daemon and wipes `/data/adb/tailscale`.
 
 ## The patches
@@ -61,8 +65,8 @@ the binary behaves like upstream.
    resolver (`100.100.100.100`) is even configured. Use the noop
    configurator instead, like the official `GOOS=android` build:
    quad-100 still serves MagicDNS and forwards to the tailnet's
-   resolvers. Redirecting the system's DNS traffic to quad-100 is
-   handled out-of-band (an eBPF program), not by tailscaled.
+   resolvers. Redirecting the system's single-label queries to quad-100
+   is handled out-of-band by `magicdns.sh`, not by tailscaled.
 
 Thank you to the blog
 [Full-Featured Tailscale on Android and Remote Unlocking](https://www.kxxt.dev/blog/full-tailscale-on-android-and-remote-unlocking/#patching-tailscale-for-android).

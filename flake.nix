@@ -21,10 +21,13 @@
         postInstall = "wrapProgram() { return; };" + prev.postInstall;
       });
 
-      iptables = pkgs.pkgsStatic.iptables;
-      rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: { doCheck = false; });
+      iptables = pkgs.pkgsStatic.iptables.overrideAttrs (prev: {
+        configureFlags = (prev.configureFlags or [ ]) ++ [
+          "--with-xt-lock-name=/data/adb/tailscale/xtables.lock"
+        ];
+      });
 
-      ebpf = pkgs.callPackage ./ebpf/default.nix { };
+      rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: { doCheck = false; });
 
       module = pkgs.stdenvNoCC.mkDerivation {
         pname = "tailscaled-magisk";
@@ -48,11 +51,6 @@
             ${tailscaled}/bin/tailscaled \
             ${iptables}/bin/xtables-legacy-multi \
             ${rsync}/bin/rsync
-
-          install -Dm755 -t ebpf \
-            ${ebpf}/bin/bpftool \
-            ${ebpf}/bin/magicdns \
-            ${ebpf}/lib/magicdns.bpf.o
         '';
 
         installPhase = ''
@@ -65,7 +63,7 @@
     in
     {
       packages.${system} = {
-        inherit tailscaled iptables rsync ebpf;
+        inherit tailscaled iptables rsync;
         default = module;
       };
     };
