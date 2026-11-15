@@ -18,7 +18,11 @@
           ./patches/0005-tailssh-default-path-from-init-environ.patch
           ./patches/0006-dns-noop-os-configurator-on-android.patch
         ];
+        nativeBuildInputs = prev.nativeBuildInputs ++ [ pkgs.nukeReferences ];
         postInstall = "wrapProgram() { return; };" + prev.postInstall;
+        postFixup = (prev.postFixup or "") + ''
+          nuke-refs $out/bin/tailscaled
+        '';
       });
 
       iptables = pkgs.pkgsStatic.iptables.overrideAttrs (prev: {
@@ -27,7 +31,13 @@
         ];
       });
 
-      rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: { doCheck = false; });
+      rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: {
+        doCheck = false;
+        nativeBuildInputs = prev.nativeBuildInputs ++ [ pkgs.nukeReferences ];
+        postFixup = (prev.postFixup or "") + ''
+          nuke-refs $out/bin/rsync
+        '';
+      });
 
       module = pkgs.stdenvNoCC.mkDerivation {
         pname = "tailscaled-magisk";
