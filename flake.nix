@@ -1,7 +1,7 @@
 {
   description = "Tailscale daemon Magisk module";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs";
 
   outputs = { self, nixpkgs }:
     let
