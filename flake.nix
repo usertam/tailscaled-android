@@ -33,6 +33,7 @@
 
       rsync = pkgs.pkgsStatic.rsync.overrideAttrs (prev: {
         doCheck = false;
+        configureFlags = prev.configureFlags ++ [ "--disable-idn" ];
         nativeBuildInputs = prev.nativeBuildInputs ++ [ pkgs.nukeReferences ];
         postFixup = (prev.postFixup or "") + ''
           nuke-refs $out/bin/rsync
